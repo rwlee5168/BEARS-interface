@@ -1,0 +1,302 @@
+#!/usr/bin/env python
+
+import sys, time, os, getpass, shutil, pickle
+from daemon import Daemon
+
+
+repo_path = "/etc/bears/repos"
+
+repo_users = dict()
+pending_users = dict()
+#Group names are the same as repository names 
+
+def load_dicts():
+        # Load group names and pending users
+        global repo_users, pending_users
+        os.chdir('/etc/bears/info/')
+        if os.path.exists('/etc/bears/info/repo_users'):
+            ru = open('repo_users', 'r+')
+            repo_users = pickle.load(ru)
+            ru.close()
+        else:
+            repo_users = dict()
+        if os.path.exists('/etc/bears/info/pending_users'):
+            pu = open('pending_users', 'r+')
+            pending_users = pickle.load(pu)
+            pu.close()
+        else:
+            pending_users = dict()
+
+
+def save_changes():
+        global repo_users, pending_users
+        os.chdir('/etc/bears/info/')
+
+        ru = open('repo_users', 'w+')
+        pickle.dump(repo_users,ru)
+        ru.close()
+
+        pu = open('pending_users', 'w+')
+        pickle.dump(pending_users, pu)
+        pu.close()
+
+
+class MyDaemon(Daemon):
+        def run(self):
+                while True:
+                        time.sleep(1)
+
+if __name__ == "__main__":
+        load_dicts()
+
+        daemon = MyDaemon('/tmp/bears.pid')
+        if len(sys.argv) >= 2:
+                if 'start' == sys.argv[1]:
+                        daemon.start()
+                elif 'stop' == sys.argv[1]:
+                        daemon.stop()
+                elif 'restart' == sys.argv[1]:
+                        daemon.restart()
+                elif 'share' == sys.argv[1]:
+                        # Extract the userpath, directory, and username from the args
+                        userpath = sys.argv[3]
+                        directory = sys.argv[2]
+                        username = sys.argv[4]
+
+                        # The name of the directory is the last folder in the provided
+                        # directory path, extract it
+                        name = directory.split('/')[len(directory.split('/')) - 1]
+
+                        # If the directory path isn't absolute, make it absolute
+                        if directory[0] != '/':
+                            directory = userpath + '/' + directory
+
+                        # Make a new folder in the folder of repositories for the new
+                        # repository
+                        os.mkdir(repo_path + '/' + name)
+                        os.chdir(repo_path + '/' + name)
+                        # Make a new repository inside the folder
+                        os.system('git clone --bare ' + name + ' ' + name + '.git')
+
+                        os.system('groupadd ' + name)
+                        os.system('usermod -a -G ' + name + ' ' + username)
+
+                        # Add the repository to the dictionaries for users and pending
+                        # users and add the user to the list
+                        repo_users[name] = list()
+                        pending_users[name] = list()
+                        repo_users[name].append(username)
+
+                        os.chdir(directory + '/..')
+                        # Rename the folder to a temporary name
+                        os.rename(name, name + '_temp')
+                        # Clone the repository
+                        os.system('git clone ' + repo_path + '/' + name + '/' + name + '.git')
+                        os.chdir(name + '_temp')
+                        # Move all of the files from the original folder into the
+                        # repository folder
+                        for f in os.listdir('.'):
+                            shutil.move(f, '../' + name)
+                        os.chdir('..')
+                        # Delete the old folder, which should now be empty
+                        os.removedirs(name + '_temp')
+
+                        # Recursively change all of the file permissions to permit
+                        # group
+                        os.system('chgrp -R ' + name + ' ' + name)
+                        os.system('chown -R ' + username + ':' + name + ' ' + name)
+                        os.system('chmod -R u+r,u+w,g+r,g+w ' + name)
+
+                        # Give the repo directory itself group permission
+
+                        os.system('chgrp -R ' + name + ' ' + repo_path + '/' + name)
+                        os.system('chown -R ' + username + ':' + name + ' ' + repo_path + '/' + name)
+                        os.system('chmod -R u+r,u+w,g+r,g+w ' + repo_path + '/' + name)
+
+                        os.chdir(name)
+                        # Add the repo upstream
+                        os.system('git remote add upstream ' + repo_path + '/' + name + '/' + name + '.git')
+                        # Add and push the files to the repo 
+                        os.system('git add -A')
+                        os.system('git commit -m \'' + username + ': initializing repository\'')
+                        os.system('git push -u origin master')
+                        os.chdir('/etc/bears')
+                        save_changes()                        
+                elif 'adduser' == sys.argv[1]:
+                        name_added = sys.argv[2]
+                        userpath = sys.argv[3]
+                        username = sys.argv[4]
+
+                        # Gets the folder name of the repository, working backwards
+                        # in the folders of the path, since the user might be in a
+                        # subfolder
+                        name = ''
+                        for folder in reversed(userpath.split('/')):
+                                if folder in pending_users:
+                                        name = folder
+                        # Appends the pending users name to the list of pending users
+                        # of the repo
+                        if name != '':
+                            pending_users[name].append(name_added)
+                        save_changes() 
+                elif 'retrieve' == sys.argv[1]:
+                        userpath = sys.argv[3]
+                        name = sys.argv[2]
+                        username=sys.argv[4]
+                        # Checks if the user is a pending user
+                        if username in pending_users[name]:
+                                # Adds them to the manifest of repo users
+                                repo_users[name].append(username)
+                                # Removes their name from the pending list
+                                pending_users[name].remove(username)
+
+                                os.system('usermod -a -G ' + name + ' ' + username)
+
+                                # Clones the repository in the users current directory
+                                os.chdir(userpath)
+                                os.system("git clone "+repo_path+'/'+name + '/' + name + '.git')
+                                os.system('chgrp -R ' + name + ' ' + name)
+                                os.system('chown -R ' + username + ':' + name + ' ' + name)
+                                os.system('chmod -R u+r,u+w,g+r,g+w ' + name)
+                                os.chdir(name)
+                                os.system('git remote add upstream ' + repo_path + '/' + name + '/' + name + '.git')
+                                os.chdir("/etc/bears")
+                        save_changes()
+                elif 'add' == sys.argv[1]:
+                        # Get the filename, message, userpath, and username from the
+                        # args. If there is no message, a default one is assumed.
+                        if(sys.argv[2] == '-m'):
+                            filename = sys.argv[3]
+                            message = sys.argv[4]
+                            userpath = sys.argv[5]
+                            username = sys.argv[6]
+                        else:
+                            filename = sys.argv[2]
+                            message = 'added changes to ' + filename
+                            userpath = sys.argv[3]
+                            username = sys.argv[4]
+                        # Message is preceded by the username, since all actions
+                        # are done by root, and there needs to be a way to distinguish
+                        # different users' changes
+                        message = username + ": " + message
+                        os.chdir(userpath)
+
+                        # Find the repo based off the directory name, working 
+                        # backwards in the folders of the path, since the user
+                        # might be in a subfolder
+                        name = ''
+                        for folder in reversed(userpath.split('/')):
+                                if folder in pending_users:
+                                        name = folder
+                        # Adds group permission to the file
+                        if name != '':
+                                os.system('chgrp -R ' + name + ' ' + filename)
+                                os.system('chown -R ' + username + ':' + name + ' ' + filename)
+                                os.system('chmod -R u+r,u+w,g+r,u+w ' + filename)
+
+                        # Adds and commits the changes
+                        os.system('git add ' + filename)
+                        os.system('git commit -m ' + '\'' + message + '\'')
+                        os.chdir('/etc/bears')
+                        save_changes()
+                elif 'push' == sys.argv[1]:
+                        userpath = sys.argv[2]
+                        username = sys.argv[3]
+                        # Go to the directory and push                    
+                        os.chdir(userpath)
+                        os.system('git push -u origin master')
+                        os.chdir('/etc/bears')
+                        save_changes()
+                elif 'addpush' == sys.argv[1]:
+                        # Get the filename, message, userpath, and username from the
+                        # args. If there is no message, a default one is assumed.
+                        if(sys.argv[2] == '-m'):
+                            filename = sys.argv[3]
+                            message = sys.argv[4]
+                            userpath = sys.argv[5]
+                            username=sys.argv[6]
+                        else:
+                            filename = sys.argv[2]
+                            message = 'added changes ' + filename
+                            userpath = sys.argv[3]
+                            username=sys.argv[4]
+                        message = getpass.getuser() + ": " + message
+                        os.chdir(userpath)
+                        # Find the repo based off the directory name, working 
+                        # backwards in the folders of the path, since the user
+                        # might be in a subfolder
+                        name = ''
+                        for folder in reversed(userpath.split('/')):
+                                if folder in pending_users:
+                                        name = folder
+                        # Adds group permission to the file
+                        if name != '':
+                                os.system('chgrp -R ' + name + ' ' + filename)
+                                os.system('chown -R ' + username + ':' + name + ' ' + filename)
+                                os.system('chmod -R u+r,u+w,g+r,g+w ' + filename)
+
+                        # Add and push files
+                        os.system('git add ' + filename)
+                        os.system('git commit -m '+'\''+message+'\'')
+                        os.system('git push -u origin master')
+                        os.chdir('/etc/bears')
+                        save_changes()
+                elif 'addpushall' == sys.argv[1]:
+                        # Get the filename, message, userpath, and username from the
+                        # args. If there is no message, a default one is assumed.
+                        if(sys.argv[2] == '-m'):
+                            message = sys.argv[3]
+                            userpath = sys.argv[4]
+                            username=sys.argv[5]
+                        else:
+                            message = 'added changes to everything'
+                            userpath = sys.argv[2]
+                            username=sys.argv[3]
+                        os.chdir(userpath)
+
+
+                        name = ''
+                        while(os.path.abspath('.').split('/')[len(os.path.abspath('.').split('/')) - 1] not in repo_users):
+                            os.chdir('..')
+                            name = os.path.abspath('.').split('/')[len(os.path.abspath('.').split('/')) - 1]
+                        if(os.path.abspath('.').split('/')[len(os.path.abspath('.').split('/')) - 1] in repo_users):
+                            name = os.path.abspath('.').split('/')[len(os.path.abspath('.').split('/')) - 1]
+                            os.chdir('..')
+                        if name != '':
+                            os.system('chgrp -R ' + name + ' ' + name)
+                            os.system('chown -R ' + username + ':' + name + ' ' + name)
+                            os.system('chmod -R u+r,u+w,g+r,g+w ' + name)
+
+                        # Add and push all files
+                        os.system('git add -A')
+                        os.system('git commit -m '+'\''+message+'\'')
+                        os.system('git push -u origin master')
+                        os.chdir('/etc/bears')
+                        save_changes()
+                elif 'pull' == sys.argv[1]:
+                        userpath = sys.argv[2]
+                        username = sys.argv[3]
+                        # Go to the directory and push                    
+                        os.chdir(userpath)
+                        os.system('git pull -u origin master')
+                        name = ''
+                        while(os.path.abspath('.').split('/')[len(os.path.abspath('.').split('/')) - 1] not in repo_users):
+                            os.chdir('..')
+                            name = os.path.abspath('.').split('/')[len(os.path.abspath('.').split('/')) - 1]
+                        if(os.path.abspath('.').split('/')[len(os.path.abspath('.').split('/')) - 1] in repo_users):
+                            name = os.path.abspath('.').split('/')[len(os.path.abspath('.').split('/')) - 1]
+                            os.chdir('..')
+                        if name != '':
+                            os.system('chgrp -R ' + name + ' ' + name)
+                            os.system('chown -R ' + username + ':' + name + ' ' + name)
+                            os.system('chmod -R u+r,u+w,g+r,g+w ' + name)
+                        os.chdir('/etc/bears')
+                        save_changes()
+                else:
+                        print "Unknown command"
+                        sys.exit(2)
+                sys.exit(0)
+        else:
+                print "usage: %s start|stop|restart" % sys.argv[0]
+                sys.exit(2)
+

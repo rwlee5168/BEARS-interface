@@ -1,11 +1,121 @@
-#! usr/bin/python3
+#!/usr/bin/python -O
 
-import sys
+"""
+BEARS (Berkeley Editing And Revision System) Interface
 
+by Tonight We Dine In Shell!
+    - Jason Cramer
+    - Jian Qiao
+    - Praveen Puvvadi
+    - Ronald Lee
+    - Siyuan He
+
+"""
+
+
+import sys, getopt, os, getpass
+from subprocess import call
+
+DAEMONPATH = '/etc/init.d/testdaemonscript.sh'
+
+helpdoc = """
+
+share <path to directory> :: Initialize a directory for sharing.
+adduser <username>        :: Add a user to a project. Note that you must be
+                             in the main project folder while you call this.
+retrieve <foldername>     :: If you have been added to a project, confirm
+                             that you're okay with it. This will make a copy
+                             of the files in your current directory.
+add -m <filename>         :: Adds a file to the queue of files to be pushed to
+                             the project repository. Adding the -m option will
+                             allow you to add it with a specific message,
+                             detailing your changes to the file.
+push                      :: Pushes all of the files in the queue to the
+                             project repository.
+addpush -m <filename>     :: Adds and automatically pushes a file to the
+                             project repository. Adding the -m option will
+                             allow you to add it with a specific message,
+                             detailing your changes to the file.
+addpushall                :: Adds and pushes all of the files in the
+                             repository. Handy for pushing lots of changes
+                             in one fell swoop!
+pull                      :: Pulls any updated files. \n\n"""
+
+
+def process_args(opts, args, message):
+    """ Process the arguments. Technically, this d`oesn't perform the actions
+        requested by the user, but merely passes them on if valid. """
+    for o, a in opts:
+        if o in ("-h", "--help"):
+            print(helpdoc)
+            return
+    # We assume that the first argument describes the process to be done.
+    # Since the daemon will be doing all of the processing, all we need
+    # to do is pass along the message.
+    if len(args) == 0:
+        return
+    arg = args[0]
+    if arg == "help":
+        print(helpdoc)
+        return
+    if arg in ["exit", "goodbye", "quit"]:
+        print("Goodbye!")
+        sys.exit()
+    if arg in ["pull", "share", "add", "push", "addpush", "addpushall", "adduser", "retrieve"]:
+        try:
+            send_to_daemon(message)
+        except OSError:
+            print("Uh oh, something went terribly wrong. Jumping ship!")
+            sys.exit()
+    else:
+        print("We didn't recognize \"" + arg + "\". Why don't you try typing \"help\" if you're having trouble?")
+
+def authenticate():
+    """ Prompts the user with a password request to ensure that the user is
+        who he says he is, so he can't wreak havoc. """
+    command = "/bin/su " + getpass.getuser() + " -c \"exit\" 2>/dev/null"
+    print 'Please enter your password -- we want to make sure you\'re you!\n'
+    for _ in range(3):
+        if os.system(command) == 0:
+            print("\nExistential crisis averted. All is well.\n")
+            return
+        elif _ != 2:
+            print "Whoops, seems that you got your password wrong. Maybe you should try again.\n"
+    print("Stop right there, criminal scum! You have violated the law! Off to the dungeon with you!")
+    sys.exit()
+
+
+def send_to_daemon(message):
+    """ Passes along a message to the daemon. The message consists of the 
+        original message, the user's current absolute path, and the username."""
+    call([DAEMONPATH] + message + [os.path.abspath('.'),getpass.getuser()]);
+
+
+def loop():
+    """ The REPL loop for the interface. """
+    print("Welcome to BEARS!\n")
+    while True:
+        try:
+            message = str(raw_input('[^-.-^] ')).split()
+            process_args([], message, message)
+        except KeyboardInterrupt:
+            print("\nGoodbye!")
+            sys.exit()
 
 def main():
-
-
+    try:
+        opts, args = getopt.getopt(sys.argv[1:], "h", ["help"])
+    except getopt.error, msg:
+        print(msg)
+        print("for help use --help")
+        sys.exit(2)
+    if len(args) == 0:
+        authenticate()
+        loop()
+    else:
+        if args[0] != "help":
+            authenticate()
+        process_args(opts, args, sys.argv[1:])
 
 if __name__ == "__main__":
     sys.exit(main())
